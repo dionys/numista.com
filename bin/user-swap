@@ -1,0 +1,103 @@
+#!/usr/bin/env perl
+
+use strictures;
+use open qw(:std :utf8);
+
+use Web::Query qw(wq);
+
+use parent 'App::Cmd::Simple';
+
+
+our $SwapListURL = 'http://en.numista.com/echanges/membre.php?id=%s';
+our $CoinURL     = 'http://en.numista.com/catalogue/pieces%s.html';
+
+
+__PACKAGE__->import();
+__PACKAGE__->run();
+
+
+sub execute {
+	my ($self, $opts) = @_;
+
+	$Web::Query::UserAgent = LWP::UserAgent->new(agent => $self->app->arg0 . ' (Mozilla/5.0 compatible)');
+
+	my $lst = _fetch_swap_list($opts->user);
+
+	return unless $lst;
+
+	for my $i (sort { ($lst->{$a}{s} cmp $lst->{$b}{s}) || ($lst->{$a}{t} cmp $lst->{$b}{t}) } keys(%$lst)) {
+		for my $y (@{$lst->{$i}{y}}) {
+			print(join("\t", 
+				$lst->{$i}{s},
+				$lst->{$i}{t},
+				$y,
+				$lst->{$i}{i} || '',
+				$lst->{$i}{r} || '',
+				join(', ',
+					($lst->{$i}{c} ? 'com' : ()),
+					($lst->{$i}{b} ? 'bi'  : ()),
+				),
+				$lst->{$i}{p} || '',
+				sprintf($CoinURL, $i),
+			), "\n");
+		}
+	}
+}
+
+sub opt_spec {
+	return (
+		['user|u=i' => 'user id', {required => 1}],
+	);
+}
+
+sub _fetch_swap_list {
+	my ($id) = @_;
+
+	my $wq = _fetch_url(sprintf($SwapListURL, $id));
+
+	die("Can\'t fetch swap page\n") unless $wq;
+
+	my %lst;
+	my $cur;
+
+	$wq->find('.checkbox')->each(sub {
+		my $val = $_[1]->parent->find('a')->first->attr('href');
+
+		if ($val) {
+			($val) = $val =~ /(\d+)\.html/;
+			$cur = $val if $val;
+		}
+
+		$lst{$cur} = {s => '', t => '', y => []} unless $lst{$cur};
+
+		$val = $_[1]->parent->find('.millesime')->text;
+		$val =~ s/^\s+//;
+		$val =~ s/\s+$//;
+		push(@{$lst{$cur}{y}}, $val);
+	});
+
+	for (keys(%lst)) {
+		my $wq = _fetch_url(sprintf($CoinURL, $_));
+
+		warn("Can't fetch coin $_ page\n") and next unless $wq;
+
+		$lst{$_}{t} = $wq->find('h1')->first->text // '';
+		$lst{$_}{s} = $wq->find('.sprite')->first->attr('title') // '';
+		$lst{$_}{i} = $wq->find('#caracteristiques_km')->first->text;
+		$lst{$_}{c} = 1 if $wq->find('#fiche_descriptions h3')->text =~ /commemorative/i;
+		$lst{$_}{b} = 1 if $wq->find('#fiche_caracteristiques')->text =~ /bi-metall/i;
+		$lst{$_}{r} = $1 if $wq->find('#fiche_echanges')->text =~ /rarity index:\s*(\d+)/i;
+		$lst{$_}{p} = $1 if $wq->find('#fiche_caracteristiques')->text =~ /years?\s*(.+?)\s*value/i;
+	}
+
+	return \%lst;
+}
+
+sub _fetch_url {
+	my ($url) = @_;
+
+	my $wq = wq($url);
+
+	return unless $wq;
+	return $wq;
+}
